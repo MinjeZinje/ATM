@@ -1,24 +1,24 @@
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import TimeSeriesSplit
-from sklearn.linear_model import LinearRegression, Lasso
+import os
+from sklearn.model_selection import TimeSeriesSplit, GridSearchCV
+from sklearn.linear_model import Ridge
 from sklearn.metrics import mean_absolute_error, mean_squared_error
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import StandardScaler, PolynomialFeatures
+from sklearn.feature_selection import SelectKBest, f_regression
 
-# Step 1: Load Processed Data
-data = pd.read_csv(r'C:\Users\Minjin\PycharmProjects\pythonProject1\.venv\processed_5ATM_features.csv')
+# Load the dataset with a relative path
+file_path = 'data.csv'
+if not os.path.exists(file_path):
+    raise FileNotFoundError(f"File not found: {file_path}. Ensure it is in the correct directory.")
 
-# Step 2: Replace Empty Cells with NaN
-data.replace(['', ' '], pd.NA, inplace=True)
+data = pd.read_csv(file_path)
 
-# Step 3: Drop Rows with Missing Critical Features
-data.dropna(subset=['ATM_WITHDRWLS_1WEEKAGO', 'AVG_ATM_WITHDRW_PREVMONTH'], inplace=True)
+# Replace empty cells with NaN and handle missing values
+data.replace(['', ' '], np.nan, inplace=True)
+data.ffill(inplace=True)  # Forward-fill missing values
 
-# Step 4: Add Derived Features (IsSaturday and IsSunday)
-data['IsSaturday'] = (data['DAY_OF_WEEK'] == 6).astype(int)
-data['IsSunday'] = (data['DAY_OF_WEEK'] == 7).astype(int)
-
-# Step 5: Define Feature Sets
+# Define Feature Sets
 feature_sets = {
     'F0': ['ATM_WITHDRWLS_1WEEKAGO'],
     'F1': ['ATM_WITHDRWLS_1WEEKAGO', 'HOLIDAY', 'AVG_ATM_WITHDRW_PREVMONTH', 'DAY_OF_WEEK'],
@@ -35,49 +35,68 @@ feature_sets = {
            'IsSaturday', 'IsSunday']
 }
 
-# Step 6: Train and Evaluate Linear Regression
+# Hyperparameter tuning for Ridge
+alphas = [0.1, 1, 10, 50, 100, 200, 500]
+
+# Train and Evaluate Ridge Regression with Polynomial Features
 results = []
-tscv = TimeSeriesSplit(n_splits=10)
+ts_cv = TimeSeriesSplit(n_splits=10)
 
 for feature_set_name, features in feature_sets.items():
-    # Filter features from data
     X = data[features]
-    y = data['ATM_WITHDRWLS']  # Predict ATM withdrawals
+    y = data['ATM_WITHDRWLS']  # Target Variable
 
-    # Check for and handle missing values in X
+    # Handle missing values
     if X.isnull().values.any():
         X = X.dropna()
-        y = y[X.index]
+        y = y.loc[X.index]
 
-    # Scale the features
-    scaler = MinMaxScaler()
+    # Scale the features (use StandardScaler instead of MinMaxScaler)
+    scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
 
-    model = Lasso(alpha=80)  # Using Lasso Regression
-    mae_list = []
-    rmse_list = []
+    # Generate Polynomial Features (degree=2)
+    poly = PolynomialFeatures(degree=2, interaction_only=True, include_bias=False)
+    X_poly = poly.fit_transform(X_scaled)
+
+    # Feature Selection (SelectKBest with f_regression)
+    selector = SelectKBest(score_func=f_regression, k=min(15, X_poly.shape[1]))
+    X_selected = selector.fit_transform(X_poly, y)
+
+    # Tune Ridge using GridSearchCV
+    ridge_grid = GridSearchCV(Ridge(), param_grid={'alpha': alphas}, scoring='neg_mean_absolute_error', cv=3)
+    ridge_grid.fit(X_selected, y)
+    best_ridge = ridge_grid.best_estimator_
+
+    mae_ridge_list = []
+    rmse_ridge_list = []
 
     # Perform Time-Series Cross-Validation
-    for train_index, test_index in tscv.split(X_scaled):
-        X_train, X_test = X_scaled[train_index], X_scaled[test_index]
+    for train_index, test_index in ts_cv.split(X_selected):
+        X_train, X_test = X_selected[train_index], X_selected[test_index]
         y_train, y_test = y.iloc[train_index], y.iloc[test_index]
 
-        model.fit(X_train, y_train)
-        y_pred = model.predict(X_test)
+        best_ridge.fit(X_train, y_train)
+        ridge_pred = best_ridge.predict(X_test)
 
-        mae = mean_absolute_error(y_test, y_pred)
-        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+        mae_ridge = mean_absolute_error(y_test, ridge_pred)
+        rmse_ridge = np.sqrt(mean_squared_error(y_test, ridge_pred))
 
-        mae_list.append(mae)
-        rmse_list.append(rmse)
+        mae_ridge_list.append(mae_ridge)
+        rmse_ridge_list.append(rmse_ridge)
 
-    # Record results for this feature set
+    # Print feature importance (coefficients)
+    print(f"Feature Importance for {feature_set_name} - Ridge:")
+    print(dict(zip(poly.get_feature_names_out(), best_ridge.coef_)))
+
+    # Record results
     results.append({
         'Feature Set': feature_set_name,
-        'MAE': np.mean(mae_list),
-        'RMSE': np.mean(rmse_list)
+        'Best Ridge Alpha': best_ridge.alpha,
+        'MAE (Ridge)': np.mean(mae_ridge_list),
+        'RMSE (Ridge)': np.mean(rmse_ridge_list)
     })
 
-# Step 7: Display Results
+# Display Results
 results_df = pd.DataFrame(results)
 print(results_df)
