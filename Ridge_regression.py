@@ -35,7 +35,6 @@ feature_sets = {
            "BRA_DEPOSITS", "IsSaturday", "IsSunday"]
 }
 
-# Ensure output directory exists
 output_dir = "ridge_graphs"
 os.makedirs(output_dir, exist_ok=True)
 
@@ -55,12 +54,10 @@ for atm_id in atms_to_analyze:
         selected_columns = ["DATE", "ATM_WITHDRWLS"] + [col for col in feature_set if col in atm_data.columns]
         atm_data_filtered = atm_data[selected_columns].dropna().copy()
 
-        # ✅ Ensure DATE is still present before setting it as index
         print("Filtered dataset columns before setting index:", atm_data_filtered.columns.tolist())
 
         atm_data_filtered.set_index('DATE', inplace=True)
 
-        # ✅ Convert split_date to Timestamp
         split_date = pd.Timestamp('2007-06-01')
 
         # Train-test split
