@@ -15,38 +15,31 @@ output_dir = "output_graphs"
 os.makedirs(output_dir, exist_ok=True)
 
 # Load dataset
-file_path = "data.csv"  # Ensure the correct file path
+file_path = "data.csv"
 ridge_results_path = "ridge_results.csv"
 data = pd.read_csv(file_path)
 data['DATE'] = pd.to_datetime(data['DATE'])
 data.sort_values(by=['ATM_ID', 'DATE'], inplace=True)
 
-
 def check_stationarity(series):
     """Perform Augmented Dickey-Fuller test to check stationarity."""
     result = adfuller(series.dropna())
-    return result[1] < 0.05  # If p-value < 0.05, the series is stationary
-
+    return result[1] < 0.05
 
 # Define Feature Sets
 feature_sets = {
     "F0": ["ATM_WITHDRWLS_1WEEKAGO"],
     "F1": ["ATM_WITHDRWLS_1WEEKAGO", "HOLIDAY", "AVG_ATM_WITHDRW_PREVMONTH", "DAY_OF_WEEK"],
-    "F2": ["ATM_WITHDRWLS_1WEEKAGO", "HOLIDAY", "AVG_ATM_WITHDRW_PREVMONTH", "DAY_OF_WEEK", "MONTH", "FIRSTWORKDAY",
-           "LASTWORKDAY"],
-    "F3": ["ATM_WITHDRWLS_1WEEKAGO", "ATM_WITHDRWLS_2WEEKAGO", "HOLIDAY", "AVG_ATM_WITHDRW_PREVMONTH", "DAY_OF_WEEK",
-           "IsSaturday", "IsSunday"],
-    "F4": ["ATM_WITHDRWLS_1WEEKAGO", "HOLIDAY", "AVG_ATM_WITHDRW_PREVMONTH", "DAY_OF_WEEK", "MONTH", "FIRSTWORKDAY",
-           "LASTWORKDAY", "ATM_WITHDRWLS_2WEEKAGO", "BRA_WITHDRWLS", "BRA_DEPOSITS", "IsSaturday", "IsSunday"],
-    "F5": ["ATM_WITHDRWLS_1WEEKAGO", "HOLIDAY", "AVG_ATM_WITHDRW_PREVMONTH", "ATM_WITHDRWLS_2WEEKAGO", "DAY_OF_WEEK",
-           "MONTH", "FIRSTWORKDAY", "LASTWORKDAY", "BRA_WITHDRWL_RATIO", "AVG_BRA_WITHDRWL_PREVMONTH", "BRA_WITHDRWLS",
-           "BRA_DEPOSITS", "IsSaturday", "IsSunday"]
+    "F2": ["ATM_WITHDRWLS_1WEEKAGO", "HOLIDAY", "AVG_ATM_WITHDRW_PREVMONTH", "DAY_OF_WEEK", "MONTH", "FIRSTWORKDAY", "LASTWORKDAY"],
+    "F3": ["ATM_WITHDRWLS_1WEEKAGO", "ATM_WITHDRWLS_2WEEKAGO", "HOLIDAY", "AVG_ATM_WITHDRW_PREVMONTH", "DAY_OF_WEEK", "IsSaturday", "IsSunday"],
+    "F4": ["ATM_WITHDRWLS_1WEEKAGO", "HOLIDAY", "AVG_ATM_WITHDRW_PREVMONTH", "DAY_OF_WEEK", "MONTH", "FIRSTWORKDAY", "LASTWORKDAY", "ATM_WITHDRWLS_2WEEKAGO", "BRA_WITHDRWLS", "BRA_DEPOSITS", "IsSaturday", "IsSunday"],
+    "F5": ["ATM_WITHDRWLS_1WEEKAGO", "HOLIDAY", "AVG_ATM_WITHDRW_PREVMONTH", "ATM_WITHDRWLS_2WEEKAGO", "DAY_OF_WEEK", "MONTH", "FIRSTWORKDAY", "LASTWORKDAY", "BRA_WITHDRWL_RATIO", "AVG_BRA_WITHDRWL_PREVMONTH", "BRA_WITHDRWLS", "BRA_DEPOSITS", "IsSaturday", "IsSunday"]
 }
 
 # ATMs to analyze
 atms_to_analyze = data["ATM_ID"].unique()
 
-# Hyperparameter tuning grid
+# Hyperparameter grid
 p_values = [0, 1, 2]
 d_values = [0, 1]
 q_values = [0, 1, 2]
@@ -54,6 +47,7 @@ param_combinations = list(itertools.product(p_values, d_values, q_values))
 
 # Results storage
 combined_results = []
+prediction_rows = []  # <--- NEW list to collect predictions
 
 # Process each ATM
 for atm_id in atms_to_analyze:
@@ -63,21 +57,26 @@ for atm_id in atms_to_analyze:
     # Check if differencing is needed
     d_param = 1 if not check_stationarity(atm_data['ATM_WITHDRWLS']) else 0
 
-    # Iterate through each feature set
     for feature_set_name, feature_set in feature_sets.items():
         selected_columns = ["ATM_WITHDRWLS"] + [col for col in feature_set if col in atm_data.columns]
         atm_data_filtered = atm_data[selected_columns].dropna()
 
-        # Split dynamically (80% train, 20% test)
-        split_index = int(len(atm_data_filtered) * 0.8)
-        train = atm_data_filtered.iloc[:split_index]
-        test = atm_data_filtered.iloc[split_index:]
+        # Filter by fixed date range
+        start_date = pd.to_datetime("2006-01-01")
+        end_date = pd.to_datetime("2008-02-25")
+        atm_data_filtered = atm_data[selected_columns].loc[start_date:end_date].dropna()
+
+        # Apply fixed train/test date split
+        train = atm_data_filtered.loc[:pd.to_datetime("2007-05-31")]
+        test = atm_data_filtered.loc[pd.to_datetime("2007-06-01"):pd.to_datetime("2008-02-25")]
+
+        if train.empty or test.empty:
+            continue
 
         best_model = None
         best_aic = float("inf")
         best_order = None
 
-        # Grid search for best SARIMAX parameters
         for order in param_combinations:
             try:
                 model = SARIMAX(train["ATM_WITHDRWLS"], exog=train[feature_set], order=(order[0], d_param, order[2]))
@@ -89,7 +88,7 @@ for atm_id in atms_to_analyze:
             except:
                 continue
 
-        # Predict on both train and test set
+        # Generate predictions
         train_pred = best_model.predict(start=0, end=len(train) - 1, exog=train[feature_set])
         test_pred = best_model.predict(start=len(train), end=len(train) + len(test) - 1, exog=test[feature_set])
 
@@ -111,7 +110,35 @@ for atm_id in atms_to_analyze:
             'MAPE (Train/Test)': f"{train_mape:.2f} / {test_mape:.2f}"
         })
 
-# Save results
+        # --- Save Predictions (NEW BLOCK) ---
+        train_dates = train.index
+        test_dates = test.index
+
+        train_df = pd.DataFrame({
+            'ATM_ID': atm_id,
+            'Feature_Set': feature_set_name,
+            'DATE': train_dates,
+            'Set_Type': 'Train',
+            'Actual': train["ATM_WITHDRWLS"].values,
+            'Predicted': train_pred.values
+        })
+
+        test_df = pd.DataFrame({
+            'ATM_ID': atm_id,
+            'Feature_Set': feature_set_name,
+            'DATE': test_dates,
+            'Set_Type': 'Test',
+            'Actual': test["ATM_WITHDRWLS"].values,
+            'Predicted': test_pred.values
+        })
+
+        prediction_rows.extend([train_df, test_df])
+
+# Save errors
 results_df = pd.DataFrame(combined_results)
 results_df.to_csv("SARIMAX_optimized_results.csv", index=False)
-print("Optimized SARIMAX model results with Train/Test metrics saved.")
+
+# Save predictions (NEW LINE)
+pd.concat(prediction_rows).to_csv("sarimax_predictions.csv", index=False)
+
+print("Optimized SARIMAX model results and predictions saved.")
